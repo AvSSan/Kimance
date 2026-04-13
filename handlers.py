@@ -322,66 +322,118 @@ async def cb_subs_list(callback: CallbackQuery):
 async def cb_subs_add(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SubState.waiting_for_name)
     await callback.message.edit_text("Введите название подписки/регулярного платежа:", reply_markup=get_cancel_keyboard())
+    await state.update_data(sub_msg_id=callback.message.message_id)
 
 @router.message(SubState.waiting_for_name)
 async def sub_process_name(message: Message, state: FSMContext):
     if not message.text:
         return
+    try: await message.delete()
+    except Exception: pass
+    
     await state.update_data(sub_name=message.text.strip())
     await state.set_state(SubState.waiting_for_amount)
-    await message.answer("Введите сумму (например, 150.0):", reply_markup=get_cancel_keyboard())
+    
+    data = await state.get_data()
+    sub_msg_id = data.get('sub_msg_id')
+    
+    text = f"Название: <b>{message.text.strip()}</b>\nВведите сумму (например, 150.0):"
+    
+    if sub_msg_id:
+        try:
+            await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+            return
+        except Exception: pass
+    msg = await message.answer(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+    await state.update_data(sub_msg_id=msg.message_id)
 
 @router.message(SubState.waiting_for_amount)
 async def sub_process_amount(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
+
+    data = await state.get_data()
+    sub_msg_id = data.get('sub_msg_id')
+
     try:
         amount = float(message.text.replace(",", "."))
-        if amount <= 0:
-            raise ValueError
+        if amount <= 0: raise ValueError
     except ValueError:
-        await message.answer("Ошибка: сумма должна быть положительным числом.")
+        text = f"Название: <b>{data.get('sub_name', '')}</b>\n❌ Ошибка: сумма должна быть числом.\nВведите сумму:"
+        if sub_msg_id:
+            try:
+                await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+                return
+            except Exception: pass
+        msg = await message.answer(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+        await state.update_data(sub_msg_id=msg.message_id)
         return
         
     await state.update_data(sub_amount=amount)
+    data['sub_amount'] = amount
     
-    # Propose type
     builder = InlineKeyboardBuilder()
     builder.button(text="Доход", callback_data="subtype_Доход")
     builder.button(text="Расход", callback_data="subtype_Расход")
     builder.adjust(2)
     
     await state.set_state(SubState.waiting_for_type)
-    await message.answer("Это доход или расход?", reply_markup=builder.as_markup())
+    text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{amount}</b>\nЭто доход или расход?"
+    
+    if sub_msg_id:
+        try:
+            await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=builder.as_markup())
+            return
+        except Exception: pass
+    msg = await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+    await state.update_data(sub_msg_id=msg.message_id)
 
 @router.callback_query(SubState.waiting_for_type, F.data.startswith("subtype_"))
 async def sub_process_type(callback: CallbackQuery, state: FSMContext):
     type_ = callback.data.replace("subtype_", "")
     await state.update_data(sub_type=type_)
+    data = await state.get_data()
     
     cats_type = "income" if type_ == "Доход" else "expense"
     categories = storage.get_categories(cats_type)
     
     await state.set_state(SubState.waiting_for_category)
-    await callback.message.edit_text("Выберите категорию:", reply_markup=get_categories_keyboard(categories, prefix="subcat_"))
+    text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{data['sub_amount']}</b>\nТип: <b>{type_}</b>\nВыберите категорию:"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_categories_keyboard(categories, prefix="subcat_"))
 
 @router.callback_query(SubState.waiting_for_category, F.data.startswith("subcat_"))
 async def sub_process_category(callback: CallbackQuery, state: FSMContext):
     category = callback.data.replace("subcat_", "")
     await state.update_data(sub_category=category)
+    data = await state.get_data()
     
     await state.set_state(SubState.waiting_for_date)
-    await callback.message.edit_text("Введите дату следующего платежа в формате ДД.ММ.ГГГГ (например, 15.05.2026):", reply_markup=get_cancel_keyboard())
+    text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{data['sub_amount']}</b>\nКатегория: <b>{category}</b>\nВведите дату платежа (ДД.ММ.ГГГГ):"
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
 
 @router.message(SubState.waiting_for_date)
 async def sub_process_date(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
+
     import datetime
     date_str = message.text.strip()
+    data = await state.get_data()
+    sub_msg_id = data.get('sub_msg_id')
+    
     try:
         dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
     except ValueError:
-        await message.answer("Неверный формат даты или дата не существует. Пожалуйста, введите валидную дату в формате ДД.ММ.ГГГГ:", reply_markup=get_cancel_keyboard())
+        text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{data['sub_amount']}</b>\nКатегория: <b>{data['sub_category']}</b>\n❌ Неверный формат. Дата (ДД.ММ.ГГГГ):"
+        if sub_msg_id:
+            try:
+                await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+                return
+            except Exception: pass
+        msg = await message.answer(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+        await state.update_data(sub_msg_id=msg.message_id)
         return
         
-    data = await state.get_data()
     sub_storage.add_subscription(
         name=data['sub_name'],
         amount=data['sub_amount'],
@@ -390,7 +442,15 @@ async def sub_process_date(message: Message, state: FSMContext):
         date_str=date_str
     )
     
-    await message.answer(f"✅ Подписка «{data['sub_name']}» добавлена на {date_str}!", reply_markup=get_subscriptions_menu())
+    text = f"✅ Подписка «{data['sub_name']}» добавлена на {date_str}!"
+    if sub_msg_id:
+        try:
+            await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_subscriptions_menu())
+        except Exception:
+            await message.answer(text, reply_markup=get_subscriptions_menu())
+    else:
+        await message.answer(text, reply_markup=get_subscriptions_menu())
+        
     await state.clear()
 
 @router.callback_query(F.data == "subs_del")
