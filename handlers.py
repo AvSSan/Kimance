@@ -184,7 +184,13 @@ async def process_category_selection(callback: CallbackQuery, state: FSMContext)
 @router.message(F.text == "Настройки")
 async def cmd_settings(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("Настройки категорий. Выберите тип:", reply_markup=get_settings_menu())
+    await message.answer("Настройки. Выберите раздел:", reply_markup=get_settings_menu())
+
+@router.callback_query(F.data == "settings_menu")
+async def cb_settings_menu(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("Настройки. Выберите раздел:", reply_markup=get_settings_menu())
+    await callback.answer()
 
 @router.callback_query(F.data.in_(["set_income", "set_expense"]))
 async def cb_settings_type(callback: CallbackQuery, state: FSMContext):
