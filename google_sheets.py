@@ -93,16 +93,32 @@ class GoogleSheetsClient:
         if not self.worksheet:
             self._init_worksheet()
         
-        records = self.worksheet.get_all_records()
+        records = self.worksheet.get_all_values()
+        if len(records) < 2:
+            return 0.0
+            
+        headers = records[0]
+        try:
+            sum_idx = headers.index("Сумма")
+            type_idx = headers.index("Тип")
+        except ValueError:
+            return 0.0
+
         balance = 0.0
-        for row in records:
-            # "Сумма", "Тип" expected
+        for row in records[1:]:
+            if len(row) <= max(sum_idx, type_idx):
+                continue
+                
+            raw_sum = str(row[sum_idx]).strip()
+            # Убираем пробелы (разделители тысяч) и меняем запятую на точку
+            clean_sum = raw_sum.replace(' ', '').replace(',', '.')
+            
             try:
-                amt = float(str(row.get("Сумма", 0)).replace(',', '.'))
-            except (ValueError, TypeError):
+                amt = float(clean_sum)
+            except ValueError:
                 amt = 0.0
                 
-            op_type = str(row.get("Тип", "")).strip()
+            op_type = str(row[type_idx]).strip()
             if op_type == "Доход":
                 balance += amt
             elif op_type == "Расход":
