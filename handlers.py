@@ -65,7 +65,9 @@ async def cb_show_balance(callback: CallbackQuery, state: FSMContext):
     balance = await gs_client.get_balance()
     
     if balance is not None:
-        await callback.message.edit_text(f"💰 Текущий баланс: <b>{balance:g}</b>", parse_mode="HTML", reply_markup=get_main_menu())
+        # Форматируем число (например: 21 810.01)
+        formatted_balance = f"{balance:,.2f}".replace(',', ' ')
+        await callback.message.edit_text(f"💰 Текущий баланс: <b>{formatted_balance}</b>", parse_mode="HTML", reply_markup=get_main_menu())
     else:
         await callback.message.edit_text("❌ Ошибка при получении баланса.", reply_markup=get_main_menu())
     await callback.answer()
