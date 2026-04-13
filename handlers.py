@@ -59,6 +59,8 @@ async def cb_cancel_inline(callback: CallbackQuery, state: FSMContext):
 
 @router.message(F.text == "Отмена ❌")
 async def cmd_cancel(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
     await state.clear()
     await message.answer("Действие отменено.", reply_markup=get_main_menu())
 
@@ -66,6 +68,8 @@ async def cmd_cancel(message: Message, state: FSMContext):
 
 @router.message(F.text == "Баланс 💰")
 async def cmd_show_balance(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
     await state.clear()
     msg = await message.answer("⏳ Подсчет баланса...")
     balance = await gs_client.get_balance()
@@ -83,6 +87,8 @@ from keyboards import get_cancel_reply_keyboard
 @router.message(F.text.in_(["Доход", "Расход"]))
 async def cmd_operation_start(message: Message, state: FSMContext):
     op_type = message.text
+    try: await message.delete()
+    except Exception: pass
     msg = await message.answer(f"Выбран: <b>{op_type}</b>\nВведите сумму (например, 100 или 100.50):", parse_mode="HTML", reply_markup=get_cancel_reply_keyboard())
     # Save the bot message ID so we can edit it later
     await state.update_data(op_type=op_type, main_msg_id=msg.message_id)
@@ -183,6 +189,8 @@ async def process_category_selection(callback: CallbackQuery, state: FSMContext)
 
 @router.message(F.text == "Настройки")
 async def cmd_settings(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
     await state.clear()
     await message.answer("Настройки. Выберите раздел:", reply_markup=get_settings_menu())
 
