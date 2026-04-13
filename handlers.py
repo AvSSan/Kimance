@@ -5,6 +5,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 import re
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from keyboards import (
     get_main_menu, get_categories_keyboard, get_settings_menu,
