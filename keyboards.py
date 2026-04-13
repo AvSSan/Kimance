@@ -1,14 +1,19 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-def get_main_menu() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="Доход", callback_data="op_income")
-    builder.button(text="Расход", callback_data="op_expense")
-    builder.button(text="Настройки", callback_data="settings_menu")
-    builder.button(text="Баланс 💰", callback_data="show_balance")
+def get_main_menu() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="Доход")
+    builder.button(text="Расход")
+    builder.button(text="Баланс 💰")
+    builder.button(text="Настройки")
     builder.adjust(2, 2)
-    return builder.as_markup()
+    return builder.as_markup(resize_keyboard=True)
+
+def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="Отмена ❌")
+    return builder.as_markup(resize_keyboard=True)
 
 def get_categories_keyboard(categories: list[str], prefix: str = "cat_") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()

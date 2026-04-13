@@ -47,39 +47,45 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.callback_query(F.data == "main_menu")
 async def cb_main_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("Выберите действие:", reply_markup=get_main_menu())
+    await callback.message.delete()
     await callback.answer()
 
 @router.callback_query(F.data == "cancel_operation")
-async def cb_cancel(callback: CallbackQuery, state: FSMContext):
+async def cb_cancel_inline(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("Действие отменено. Выберите действие:", reply_markup=get_main_menu())
+    await callback.message.edit_text("Действие отменено.")
     await callback.answer()
+
+@router.message(F.text == "Отмена ❌")
+async def cmd_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=get_main_menu())
 
 # --- Operations (Income / Expense) ---
 
-@router.callback_query(F.data == "show_balance")
-async def cb_show_balance(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "Баланс 💰")
+async def cmd_show_balance(message: Message, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("⏳ Подсчет баланса...", reply_markup=None)
+    msg = await message.answer("⏳ Подсчет баланса...")
     balance = await gs_client.get_balance()
     
     if balance is not None:
         # Форматируем число (например: 21 810.01)
         formatted_balance = f"{balance:,.2f}".replace(',', ' ')
-        await callback.message.edit_text(f"💰 Текущий баланс: <b>{formatted_balance}</b>", parse_mode="HTML", reply_markup=get_main_menu())
+        await msg.edit_text(f"💰 Текущий баланс: <b>{formatted_balance}</b>", parse_mode="HTML")
     else:
-        await callback.message.edit_text("❌ Ошибка при получении баланса.", reply_markup=get_main_menu())
-    await callback.answer()
+        await msg.edit_text("❌ Ошибка при получении баланса.")
 
 
-@router.callback_query(F.data.in_(["op_income", "op_expense"]))
-async def cb_operation_start(callback: CallbackQuery, state: FSMContext):
-    op_type = "Доход" if callback.data == "op_income" else "Расход"
-    await state.update_data(op_type=op_type)
+from keyboards import get_cancel_reply_keyboard
+
+@router.message(F.text.in_(["Доход", "Расход"]))
+async def cmd_operation_start(message: Message, state: FSMContext):
+    op_type = message.text
+    msg = await message.answer(f"Выбран: <b>{op_type}</b>\nВведите сумму (например, 100 или 100.50):", parse_mode="HTML", reply_markup=get_cancel_reply_keyboard())
+    # Save the bot message ID so we can edit it later
+    await state.update_data(op_type=op_type, main_msg_id=msg.message_id)
     await state.set_state(OperationState.waiting_for_amount)
-    await callback.message.edit_text(f"Выбран: <b>{op_type}</b>\nВведите сумму (например, 100 или 100.50):", parse_mode="HTML", reply_markup=get_cancel_keyboard())
-    await callback.answer()
 
 @router.message(OperationState.waiting_for_amount)
 async def process_amount(message: Message, state: FSMContext):
@@ -102,6 +108,13 @@ async def process_amount(message: Message, state: FSMContext):
 
     data = await state.get_data()
     op_type = data['op_type']
+    main_msg_id = data.get('main_msg_id')
+    
+    # Try to delete user message (the amount)
+    try:
+        await message.delete()
+    except Exception:
+        pass
     
     await state.update_data(amount=amount, comment=comment)
     
@@ -116,11 +129,27 @@ async def process_amount(message: Message, state: FSMContext):
         msg_text += f"\nКомментарий: <i>{comment}</i>"
     msg_text += "\nВыберите категорию:"
     
+    if main_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=main_msg_id,
+                text=msg_text,
+                parse_mode="HTML",
+                reply_markup=get_categories_keyboard(categories, prefix="selcat_")
+            )
+            # Restore the main reply keyboard in chat background
+            await message.answer("Продолжаем в меню...", reply_markup=get_main_menu(), disable_notification=True)
+            return
+        except Exception:
+            pass
+            
     await message.answer(
         msg_text, 
         parse_mode="HTML", 
         reply_markup=get_categories_keyboard(categories, prefix="selcat_")
     )
+    await message.answer("Клавиатура возвращена:", reply_markup=get_main_menu(), disable_notification=True)
 
 @router.callback_query(OperationState.waiting_for_category, F.data.startswith("selcat_"))
 async def process_category_selection(callback: CallbackQuery, state: FSMContext):
@@ -143,8 +172,7 @@ async def process_category_selection(callback: CallbackQuery, state: FSMContext)
         )
     else:
         await callback.message.edit_text(
-            f"❌ Ошибка сохранения. Попробуйте еще раз.",
-            reply_markup=get_main_menu()
+            f"❌ Ошибка сохранения. Попробуйте еще раз."
         )
         
     await state.clear()
@@ -152,11 +180,10 @@ async def process_category_selection(callback: CallbackQuery, state: FSMContext)
 
 # --- Settings ---
 
-@router.callback_query(F.data == "settings_menu")
-async def cb_settings_menu(callback: CallbackQuery, state: FSMContext):
+@router.message(F.text == "Настройки")
+async def cmd_settings(message: Message, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("Настройки категорий. Выберите тип:", reply_markup=get_settings_menu())
-    await callback.answer()
+    await message.answer("Настройки категорий. Выберите тип:", reply_markup=get_settings_menu())
 
 @router.callback_query(F.data.in_(["set_income", "set_expense"]))
 async def cb_settings_type(callback: CallbackQuery, state: FSMContext):
@@ -267,9 +294,9 @@ async def cb_undo_last(callback: CallbackQuery):
     
     if success:
         del undo_cache[user_id]
-        await callback.message.edit_text("✅ Последняя операция отменена (удалена из таблицы).", reply_markup=get_main_menu())
+        await callback.message.edit_text("✅ Последняя операция отменена (удалена из таблицы).")
     else:
-        await callback.message.edit_text("❌ При отмене произошла ошибка (запись не найдена).", reply_markup=get_main_menu())
+        await callback.message.edit_text("❌ При отмене произошла ошибка (запись не найдена).")
 
 # --- Subscriptions ---
 @router.callback_query(F.data == "subs_menu")
