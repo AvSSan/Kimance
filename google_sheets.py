@@ -4,7 +4,7 @@ from google.oauth2.service_account import Credentials
 import logging
 import datetime
 
-from config import GOOGLE_SHEET_ID, GOOGLE_CREDENTIALS_FILE, GOOGLE_WORKSHEET_TITLE
+from config import GOOGLE_SHEET_ID, GOOGLE_CREDENTIALS_FILE, GOOGLE_WORKSHEET_TITLE, BALANCE_CELL
 
 logger = logging.getLogger(__name__)
 
@@ -93,38 +93,17 @@ class GoogleSheetsClient:
         if not self.worksheet:
             self._init_worksheet()
         
-        records = self.worksheet.get_all_values()
-        if len(records) < 2:
-            return 0.0
-            
-        headers = records[0]
         try:
-            sum_idx = headers.index("Сумма")
-            type_idx = headers.index("Тип")
-        except ValueError:
-            return 0.0
-
-        balance = 0.0
-        for row in records[1:]:
-            if len(row) <= max(sum_idx, type_idx):
-                continue
-                
-            raw_sum = str(row[sum_idx]).strip()
-            # Убираем пробелы (разделители тысяч) и меняем запятую на точку
-            clean_sum = raw_sum.replace(' ', '').replace(',', '.')
+            val = self.worksheet.acell(BALANCE_CELL).value
+            if not val:
+                return 0.0
             
-            try:
-                amt = float(clean_sum)
-            except ValueError:
-                amt = 0.0
-                
-            op_type = str(row[type_idx]).strip()
-            if op_type == "Доход":
-                balance += amt
-            elif op_type == "Расход":
-                balance -= amt
-                
-        return balance
+            # Clean string: remove spaces and replace comma with dot
+            val_clean = str(val).strip().replace(' ', '').replace(',', '.')
+            return float(val_clean)
+        except Exception as e:
+            logger.error(f"Failed to read balance from cell {BALANCE_CELL}: {e}")
+            return 0.0
 
     async def get_balance(self):
         try:

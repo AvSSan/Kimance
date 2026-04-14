@@ -9,6 +9,7 @@ TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", 0))
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 GOOGLE_WORKSHEET_TITLE = os.getenv("GOOGLE_WORKSHEET_TITLE", "Расходы")
+BALANCE_CELL = os.getenv("BALANCE_CELL", "G2")
 
 CATEGORIES_FILE = os.getenv("CATEGORIES_FILE", "categories.json")
 
