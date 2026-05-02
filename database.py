@@ -100,6 +100,90 @@ class RecordsDatabase:
             logger.error(f"Failed to delete record from SQLite: {e}")
             return False
 
+    def _get_record(self, record_id: int):
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, date, time, type, amount, category, comment, created_at
+                FROM records
+                WHERE id = ?
+                """,
+                (record_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def get_record(self, record_id: int):
+        try:
+            return self._get_record(record_id)
+        except Exception as e:
+            logger.error(f"Failed to get SQLite record {record_id}: {e}")
+            return None
+
+    def _list_recent_records(self, limit: int = 10):
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, date, time, type, amount, category, comment, created_at
+                FROM records
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    async def list_recent_records(self, limit: int = 10):
+        try:
+            return self._list_recent_records(limit)
+        except Exception as e:
+            logger.error(f"Failed to list recent SQLite records: {e}")
+            return []
+
+    def _update_record_amount(self, record_id: int, amount: float):
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE records SET amount = ? WHERE id = ?",
+                (float(amount), record_id),
+            )
+            return cur.rowcount > 0
+
+    async def update_record_amount(self, record_id: int, amount: float):
+        try:
+            return self._update_record_amount(record_id, amount)
+        except Exception as e:
+            logger.error(f"Failed to update SQLite record amount {record_id}: {e}")
+            return False
+
+    def _update_record_category(self, record_id: int, category: str):
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE records SET category = ? WHERE id = ?",
+                (category, record_id),
+            )
+            return cur.rowcount > 0
+
+    async def update_record_category(self, record_id: int, category: str):
+        try:
+            return self._update_record_category(record_id, category)
+        except Exception as e:
+            logger.error(f"Failed to update SQLite record category {record_id}: {e}")
+            return False
+
+    def _update_record_comment(self, record_id: int, comment: str):
+        with self._lock, self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE records SET comment = ? WHERE id = ?",
+                (comment or "", record_id),
+            )
+            return cur.rowcount > 0
+
+    async def update_record_comment(self, record_id: int, comment: str):
+        try:
+            return self._update_record_comment(record_id, comment)
+        except Exception as e:
+            logger.error(f"Failed to update SQLite record comment {record_id}: {e}")
+            return False
+
     def _get_balance(self):
         with self._lock, self._connect() as conn:
             row = conn.execute(

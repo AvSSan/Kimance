@@ -7,8 +7,9 @@ def get_main_menu() -> ReplyKeyboardMarkup:
     builder.button(text="Расход")
     builder.button(text="Шаблоны")
     builder.button(text="Баланс 💰")
+    builder.button(text="Последние 🧾")
     builder.button(text="Настройки")
-    builder.adjust(2, 2, 1)
+    builder.adjust(2, 2, 2)
     return builder.as_markup(resize_keyboard=True)
 
 def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -62,6 +63,40 @@ def get_undo_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Меню", callback_data="main_menu")
     builder.button(text="Отменить ↩️", callback_data="undo_last")
+    builder.adjust(2)
+    return builder.as_markup()
+
+def get_recent_records_keyboard(records: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for record in records:
+        sign = "+" if record["type"] == "Доход" else "-"
+        amount = f"{float(record['amount']):,.2f}".replace(",", " ")
+        category = record["category"]
+        if len(category) > 18:
+            category = f"{category[:17]}…"
+        builder.button(
+            text=f"{record['date']} {record['time']} | {sign}{amount} | {category}",
+            callback_data=f"rec_view_{record['id']}",
+        )
+    builder.button(text="Обновить", callback_data="recent_ops")
+    builder.button(text="Меню", callback_data="main_menu")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def get_record_actions_keyboard(record_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Сумма", callback_data=f"rec_edit_amount_{record_id}")
+    builder.button(text="Категория", callback_data=f"rec_edit_cat_{record_id}")
+    builder.button(text="Комментарий", callback_data=f"rec_edit_comment_{record_id}")
+    builder.button(text="Удалить", callback_data=f"rec_delete_{record_id}")
+    builder.button(text="Назад", callback_data="recent_ops")
+    builder.adjust(2, 1, 1, 1)
+    return builder.as_markup()
+
+def get_record_delete_confirm_keyboard(record_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Удалить", callback_data=f"rec_confirm_delete_{record_id}")
+    builder.button(text="Отмена", callback_data=f"rec_view_{record_id}")
     builder.adjust(2)
     return builder.as_markup()
 

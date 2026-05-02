@@ -14,7 +14,8 @@ from keyboards import (
     get_main_menu, get_categories_keyboard, get_settings_menu,
     get_settings_action_menu, get_delete_category_keyboard, get_cancel_keyboard,
     get_undo_keyboard, get_subscriptions_menu, get_delete_subscription_keyboard,
-    get_templates_keyboard, get_templates_settings_menu, get_delete_template_keyboard
+    get_templates_keyboard, get_templates_settings_menu, get_delete_template_keyboard,
+    get_recent_records_keyboard, get_record_actions_keyboard, get_record_delete_confirm_keyboard
 )
 from storage import storage
 from subscriptions_storage import sub_storage
@@ -28,6 +29,22 @@ undo_cache = {}
 
 def h(value) -> str:
     return html.escape(str(value), quote=False)
+
+def format_money(amount: float) -> str:
+    return f"{float(amount):,.2f}".replace(",", " ")
+
+def format_record_details(record: dict) -> str:
+    sign = "+" if record["type"] == "Доход" else "-"
+    comment = h(record.get("comment") or "-")
+    return (
+        f"<b>Операция #{record['id']}</b>\n\n"
+        f"Дата: <b>{h(record['date'])}</b>\n"
+        f"Время: <b>{h(record['time'])}</b>\n"
+        f"Тип: <b>{h(record['type'])}</b>\n"
+        f"Сумма: <b>{sign}{format_money(record['amount'])}</b>\n"
+        f"Категория: <b>{h(record['category'])}</b>\n"
+        f"Комментарий: <i>{comment}</i>"
+    )
 
 router = Router()
 router.message.filter(PrivateUserFilter())
@@ -49,6 +66,11 @@ class TemplateState(StatesGroup):
     waiting_for_comment = State()
     waiting_for_type = State()
     waiting_for_category = State()
+
+class RecentRecordState(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_category = State()
+    waiting_for_comment = State()
 
 class SubState(StatesGroup):
     waiting_for_name = State()
@@ -99,6 +121,231 @@ async def cmd_show_balance(message: Message, state: FSMContext):
         await msg.edit_text(f"💰 Текущий баланс: <b>{formatted_balance}</b>", parse_mode="HTML")
     else:
         await msg.edit_text("❌ Ошибка при получении баланса.")
+
+# --- Recent Records ---
+
+async def show_recent_records(message: Message):
+    records = await records_db.list_recent_records(10)
+    if not records:
+        await message.answer("Операций пока нет.")
+        return
+    await message.answer(
+        "Последние операции:",
+        reply_markup=get_recent_records_keyboard(records)
+    )
+
+async def edit_recent_records(callback: CallbackQuery):
+    records = await records_db.list_recent_records(10)
+    if not records:
+        await callback.message.edit_text("Операций пока нет.")
+        return
+    await callback.message.edit_text(
+        "Последние операции:",
+        reply_markup=get_recent_records_keyboard(records)
+    )
+
+async def edit_record_details(message: Message, record_id: int):
+    record = await records_db.get_record(record_id)
+    if not record:
+        await message.edit_text("Операция не найдена.")
+        return
+    await message.edit_text(
+        format_record_details(record),
+        parse_mode="HTML",
+        reply_markup=get_record_actions_keyboard(record_id)
+    )
+
+@router.message(F.text == "Последние 🧾")
+async def cmd_recent_records(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
+    await state.clear()
+    await show_recent_records(message)
+
+@router.callback_query(F.data == "recent_ops")
+async def cb_recent_records(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await edit_recent_records(callback)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("rec_view_"))
+async def cb_record_view(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    record_id = int(callback.data.replace("rec_view_", ""))
+    await edit_record_details(callback.message, record_id)
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("rec_delete_"))
+async def cb_record_delete(callback: CallbackQuery):
+    record_id = int(callback.data.replace("rec_delete_", ""))
+    record = await records_db.get_record(record_id)
+    if not record:
+        await callback.answer("Операция не найдена.", show_alert=True)
+        return
+    await callback.message.edit_text(
+        f"Удалить операцию?\n\n{format_record_details(record)}",
+        parse_mode="HTML",
+        reply_markup=get_record_delete_confirm_keyboard(record_id)
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("rec_confirm_delete_"))
+async def cb_record_confirm_delete(callback: CallbackQuery):
+    record_id = int(callback.data.replace("rec_confirm_delete_", ""))
+    success = await records_db.delete_record(record_id)
+    if success:
+        for user_id, cached_record_id in list(undo_cache.items()):
+            if cached_record_id == record_id:
+                del undo_cache[user_id]
+        await callback.answer("Удалено.")
+        await edit_recent_records(callback)
+    else:
+        await callback.answer("Операция не найдена.", show_alert=True)
+
+@router.callback_query(F.data.startswith("rec_edit_amount_"))
+async def cb_record_edit_amount(callback: CallbackQuery, state: FSMContext):
+    record_id = int(callback.data.replace("rec_edit_amount_", ""))
+    record = await records_db.get_record(record_id)
+    if not record:
+        await callback.answer("Операция не найдена.", show_alert=True)
+        return
+    await state.update_data(recent_record_id=record_id, recent_msg_id=callback.message.message_id)
+    await state.set_state(RecentRecordState.waiting_for_amount)
+    await callback.message.edit_text(
+        f"{format_record_details(record)}\n\nВведите новую сумму:",
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+@router.message(RecentRecordState.waiting_for_amount)
+async def process_record_amount(message: Message, state: FSMContext):
+    data = await state.get_data()
+    record_id = data.get("recent_record_id")
+    msg_id = data.get("recent_msg_id")
+    match = re.match(r'^([\d.,]+)$', message.text or "")
+
+    try: await message.delete()
+    except Exception: pass
+
+    if not match:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg_id,
+            text="❌ Введите новую сумму числом:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+
+    try:
+        amount = float(match.group(1).replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg_id,
+            text="❌ Сумма должна быть положительным числом. Введите новую сумму:",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+
+    success = await records_db.update_record_amount(record_id, amount)
+    await state.clear()
+    if success:
+        record = await records_db.get_record(record_id)
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg_id,
+            text=format_record_details(record),
+            parse_mode="HTML",
+            reply_markup=get_record_actions_keyboard(record_id)
+        )
+    else:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg_id,
+            text="❌ Операция не найдена."
+        )
+
+@router.callback_query(F.data.startswith("rec_edit_cat_"))
+async def cb_record_edit_category(callback: CallbackQuery, state: FSMContext):
+    record_id = int(callback.data.replace("rec_edit_cat_", ""))
+    record = await records_db.get_record(record_id)
+    if not record:
+        await callback.answer("Операция не найдена.", show_alert=True)
+        return
+
+    cats_type = "income" if record["type"] == "Доход" else "expense"
+    categories = storage.get_categories(cats_type)
+    await state.update_data(recent_record_id=record_id)
+    await state.set_state(RecentRecordState.waiting_for_category)
+    await callback.message.edit_text(
+        f"{format_record_details(record)}\n\nВыберите новую категорию:",
+        parse_mode="HTML",
+        reply_markup=get_categories_keyboard(categories, prefix="recentcat_")
+    )
+    await callback.answer()
+
+@router.callback_query(RecentRecordState.waiting_for_category, F.data.startswith("recentcat_"))
+async def process_record_category(callback: CallbackQuery, state: FSMContext):
+    category = callback.data.replace("recentcat_", "")
+    data = await state.get_data()
+    record_id = data.get("recent_record_id")
+    success = await records_db.update_record_category(record_id, category)
+    await state.clear()
+    if success:
+        await edit_record_details(callback.message, record_id)
+        await callback.answer("Категория изменена.")
+    else:
+        await callback.message.edit_text("❌ Операция не найдена.")
+        await callback.answer()
+
+@router.callback_query(F.data.startswith("rec_edit_comment_"))
+async def cb_record_edit_comment(callback: CallbackQuery, state: FSMContext):
+    record_id = int(callback.data.replace("rec_edit_comment_", ""))
+    record = await records_db.get_record(record_id)
+    if not record:
+        await callback.answer("Операция не найдена.", show_alert=True)
+        return
+    await state.update_data(recent_record_id=record_id, recent_msg_id=callback.message.message_id)
+    await state.set_state(RecentRecordState.waiting_for_comment)
+    await callback.message.edit_text(
+        f"{format_record_details(record)}\n\nВведите новый комментарий или «-», чтобы очистить:",
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+@router.message(RecentRecordState.waiting_for_comment)
+async def process_record_comment(message: Message, state: FSMContext):
+    data = await state.get_data()
+    record_id = data.get("recent_record_id")
+    msg_id = data.get("recent_msg_id")
+    comment = (message.text or "").strip()
+    if comment == "-":
+        comment = ""
+
+    try: await message.delete()
+    except Exception: pass
+
+    success = await records_db.update_record_comment(record_id, comment)
+    await state.clear()
+    if success:
+        record = await records_db.get_record(record_id)
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg_id,
+            text=format_record_details(record),
+            parse_mode="HTML",
+            reply_markup=get_record_actions_keyboard(record_id)
+        )
+    else:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=msg_id,
+            text="❌ Операция не найдена."
+        )
 
 async def send_excel_export(message: Message):
     msg = await message.answer("⏳ Готовлю Excel-файл...")
