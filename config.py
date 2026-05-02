@@ -1,17 +1,18 @@
 import os
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv():
+        return False
 
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TELEGRAM_USER_ID = int(os.getenv("TELEGRAM_USER_ID", 0))
 
-GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
-GOOGLE_CREDENTIALS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
-GOOGLE_WORKSHEET_TITLE = os.getenv("GOOGLE_WORKSHEET_TITLE", "Расходы")
-BALANCE_CELL = os.getenv("BALANCE_CELL", "G2")
-
 CATEGORIES_FILE = os.getenv("CATEGORIES_FILE", "categories.json")
+DATABASE_FILE = os.getenv("DATABASE_FILE", "finance.db")
 
 DEFAULT_EXPENSE_CATEGORIES = [
     "Продукты",

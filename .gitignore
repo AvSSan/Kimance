@@ -15,6 +15,9 @@ credentials.json
 # Local storage and DBs
 categories.json
 subscriptions.json
+finance.db
+*.db
+*.xlsx
 
 # IDEs
 .idea/

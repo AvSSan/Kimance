@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from config import BOT_TOKEN
-from google_sheets import gs_client
+from database import records_db
 from handlers import router
 from scheduler import start_scheduler
 
@@ -22,8 +22,8 @@ async def main():
     # Include main router
     dp.include_router(router)
     
-    # Init Google Sheets Client
-    await gs_client.init()
+    # Init local SQLite storage
+    records_db.init()
     
     # Start the scheduler
     start_scheduler(bot)

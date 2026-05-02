@@ -6,8 +6,9 @@ def get_main_menu() -> ReplyKeyboardMarkup:
     builder.button(text="Доход")
     builder.button(text="Расход")
     builder.button(text="Баланс 💰")
+    builder.button(text="Выгрузка Excel 📤")
     builder.button(text="Настройки")
-    builder.adjust(2, 2)
+    builder.adjust(2, 2, 1)
     return builder.as_markup(resize_keyboard=True)
 
 def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:

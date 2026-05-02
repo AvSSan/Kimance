@@ -1,10 +1,13 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
+import html
 import re
+import tempfile
+from pathlib import Path
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from keyboards import (
@@ -14,10 +17,15 @@ from keyboards import (
 )
 from storage import storage
 from subscriptions_storage import sub_storage
-from google_sheets import gs_client
+from database import records_db
+from excel_utils import export_filename, write_records_xlsx
 from filters import PrivateUserFilter
 
 undo_cache = {}
+
+
+def h(value) -> str:
+    return html.escape(str(value), quote=False)
 
 router = Router()
 router.message.filter(PrivateUserFilter())
@@ -72,7 +80,7 @@ async def cmd_show_balance(message: Message, state: FSMContext):
     except Exception: pass
     await state.clear()
     msg = await message.answer("⏳ Подсчет баланса...")
-    balance = await gs_client.get_balance()
+    balance = await records_db.get_balance()
     
     if balance is not None:
         # Форматируем число (например: 21 810.01)
@@ -80,6 +88,24 @@ async def cmd_show_balance(message: Message, state: FSMContext):
         await msg.edit_text(f"💰 Текущий баланс: <b>{formatted_balance}</b>", parse_mode="HTML")
     else:
         await msg.edit_text("❌ Ошибка при получении баланса.")
+
+@router.message(F.text == "Выгрузка Excel 📤")
+async def cmd_export_excel(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
+    await state.clear()
+
+    msg = await message.answer("⏳ Готовлю Excel-файл...")
+    records = await records_db.list_records()
+    balance = await records_db.get_balance()
+    if balance is None:
+        await msg.edit_text("❌ Не удалось посчитать баланс для выгрузки.")
+        return
+
+    output_path = Path(tempfile.gettempdir()) / export_filename()
+    write_records_xlsx(records, balance, output_path)
+    await msg.edit_text("✅ Выгрузка готова.")
+    await message.answer_document(FSInputFile(output_path), caption="Excel-выгрузка финансов")
 
 
 from keyboards import get_cancel_reply_keyboard
@@ -133,7 +159,7 @@ async def process_amount(message: Message, state: FSMContext):
     
     msg_text = f"Сумма: <b>{amount}</b>"
     if comment:
-        msg_text += f"\nКомментарий: <i>{comment}</i>"
+        msg_text += f"\nКомментарий: <i>{h(comment)}</i>"
     msg_text += "\nВыберите категорию:"
     
     if main_msg_id:
@@ -167,14 +193,14 @@ async def process_category_selection(callback: CallbackQuery, state: FSMContext)
     comment = data.get('comment', '')
     
     # Send processing message
-    await callback.message.edit_text("⏳ Сохранение в Google Таблицу...")
+    await callback.message.edit_text("⏳ Сохранение...")
     
-    success, row_data = await gs_client.add_record(op_type, amount, category, comment)
+    success, record = await records_db.add_record(op_type, amount, category, comment)
     
     if success:
-        undo_cache[callback.from_user.id] = row_data
+        undo_cache[callback.from_user.id] = record["id"]
         await callback.message.edit_text(
-            f"✅ Сохранено: {op_type} {amount} -> {category}",
+            f"✅ Сохранено: {h(op_type)} {amount} -> {h(category)}",
             reply_markup=get_undo_keyboard()
         )
     else:
@@ -206,7 +232,7 @@ async def cb_settings_type(callback: CallbackQuery, state: FSMContext):
     type_name = "Доход" if cat_type == "income" else "Расход"
     
     categories = storage.get_categories(cat_type)
-    cats_str = "\n".join([f"- {c}" for c in categories])
+    cats_str = "\n".join([f"- {h(c)}" for c in categories])
     
     await callback.message.edit_text(
         f"Категории ({type_name}):\n{cats_str}\n\nВыберите действие:",
@@ -245,12 +271,12 @@ async def process_new_category(message: Message, state: FSMContext):
     added = storage.add_category(cat_type, category)
     if added:
         await message.answer(
-            f"Категория «{category}» успешно добавлена в {type_name}.",
+            f"Категория «{h(category)}» успешно добавлена в {type_name}.",
             reply_markup=get_main_menu()
         )
     else:
         await message.answer(
-            f"Категория «{category}» уже существует в {type_name}.",
+            f"Категория «{h(category)}» уже существует в {type_name}.",
             reply_markup=get_main_menu()
         )
     
@@ -286,9 +312,9 @@ async def cb_rm_category_process(callback: CallbackQuery):
     if removed:
         # Re-render the settings menu for this type
         categories = storage.get_categories(cat_type)
-        cats_str = "\n".join([f"- {c}" for c in categories])
+        cats_str = "\n".join([f"- {h(c)}" for c in categories])
         await callback.message.edit_text(
-            f"Категория «{category}» удалена.\n\nКатегории ({type_name}):\n{cats_str}\n\nВыберите действие:",
+            f"Категория «{h(category)}» удалена.\n\nКатегории ({type_name}):\n{cats_str}\n\nВыберите действие:",
             reply_markup=get_settings_action_menu(cat_type)
         )
         await callback.answer("Удалено!")
@@ -299,24 +325,25 @@ async def cb_rm_category_process(callback: CallbackQuery):
 @router.callback_query(F.data == "undo_last")
 async def cb_undo_last(callback: CallbackQuery):
     user_id = callback.from_user.id
-    row_data = undo_cache.get(user_id)
-    if not row_data:
+    record_id = undo_cache.get(user_id)
+    if not record_id:
         await callback.answer("Нет данных для отмены (возможно, прошло слишком много времени).", show_alert=True)
         return
         
     await callback.message.edit_text("⏳ Отмена операции...", reply_markup=None)
-    success = await gs_client.delete_record(row_data)
+    success = await records_db.delete_record(record_id)
     
     if success:
         del undo_cache[user_id]
-        await callback.message.edit_text("✅ Последняя операция отменена (удалена из таблицы).")
+        await callback.message.edit_text("✅ Последняя операция отменена.")
     else:
         await callback.message.edit_text("❌ При отмене произошла ошибка (запись не найдена).")
 
 # --- Subscriptions ---
 @router.callback_query(F.data == "subs_menu")
-async def cb_subs_menu(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+async def cb_subs_menu(callback: CallbackQuery, state: FSMContext | None = None):
+    if state:
+        await state.clear()
     await callback.message.edit_text("Регулярные платежи (Подписки):", reply_markup=get_subscriptions_menu())
 
 @router.callback_query(F.data == "subs_list")
@@ -328,7 +355,7 @@ async def cb_subs_list(callback: CallbackQuery):
         
     lines = ["<b>Ваши подписки:</b>\n"]
     for s in subs:
-        lines.append(f"• {s['name']} — {s['amount']} ({s['category']}) | Дата: {s['date']}")
+        lines.append(f"• {h(s['name'])} — {s['amount']} ({h(s['category'])}) | Дата: {h(s['date'])}")
         
     await callback.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=get_subscriptions_menu())
 
@@ -351,7 +378,7 @@ async def sub_process_name(message: Message, state: FSMContext):
     data = await state.get_data()
     sub_msg_id = data.get('sub_msg_id')
     
-    text = f"Название: <b>{message.text.strip()}</b>\nВведите сумму (например, 150.0):"
+    text = f"Название: <b>{h(message.text.strip())}</b>\nВведите сумму (например, 150.0):"
     
     if sub_msg_id:
         try:
@@ -373,7 +400,7 @@ async def sub_process_amount(message: Message, state: FSMContext):
         amount = float(message.text.replace(",", "."))
         if amount <= 0: raise ValueError
     except ValueError:
-        text = f"Название: <b>{data.get('sub_name', '')}</b>\n❌ Ошибка: сумма должна быть числом.\nВведите сумму:"
+        text = f"Название: <b>{h(data.get('sub_name', ''))}</b>\n❌ Ошибка: сумма должна быть числом.\nВведите сумму:"
         if sub_msg_id:
             try:
                 await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
@@ -392,7 +419,7 @@ async def sub_process_amount(message: Message, state: FSMContext):
     builder.adjust(2)
     
     await state.set_state(SubState.waiting_for_type)
-    text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{amount}</b>\nЭто доход или расход?"
+    text = f"Название: <b>{h(data['sub_name'])}</b>\nСумма: <b>{amount}</b>\nЭто доход или расход?"
     
     if sub_msg_id:
         try:
@@ -412,7 +439,7 @@ async def sub_process_type(callback: CallbackQuery, state: FSMContext):
     categories = storage.get_categories(cats_type)
     
     await state.set_state(SubState.waiting_for_category)
-    text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{data['sub_amount']}</b>\nТип: <b>{type_}</b>\nВыберите категорию:"
+    text = f"Название: <b>{h(data['sub_name'])}</b>\nСумма: <b>{data['sub_amount']}</b>\nТип: <b>{h(type_)}</b>\nВыберите категорию:"
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_categories_keyboard(categories, prefix="subcat_"))
 
 @router.callback_query(SubState.waiting_for_category, F.data.startswith("subcat_"))
@@ -422,7 +449,7 @@ async def sub_process_category(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     
     await state.set_state(SubState.waiting_for_date)
-    text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{data['sub_amount']}</b>\nКатегория: <b>{category}</b>\nВведите дату платежа (ДД.ММ.ГГГГ):"
+    text = f"Название: <b>{h(data['sub_name'])}</b>\nСумма: <b>{data['sub_amount']}</b>\nКатегория: <b>{h(category)}</b>\nВведите дату платежа (ДД.ММ.ГГГГ):"
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
 
 @router.message(SubState.waiting_for_date)
@@ -438,7 +465,7 @@ async def sub_process_date(message: Message, state: FSMContext):
     try:
         dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
     except ValueError:
-        text = f"Название: <b>{data['sub_name']}</b>\nСумма: <b>{data['sub_amount']}</b>\nКатегория: <b>{data['sub_category']}</b>\n❌ Неверный формат. Дата (ДД.ММ.ГГГГ):"
+        text = f"Название: <b>{h(data['sub_name'])}</b>\nСумма: <b>{data['sub_amount']}</b>\nКатегория: <b>{h(data['sub_category'])}</b>\n❌ Неверный формат. Дата (ДД.ММ.ГГГГ):"
         if sub_msg_id:
             try:
                 await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
@@ -456,7 +483,7 @@ async def sub_process_date(message: Message, state: FSMContext):
         date_str=date_str
     )
     
-    text = f"✅ Подписка «{data['sub_name']}» добавлена на {date_str}!"
+    text = f"✅ Подписка «{h(data['sub_name'])}» добавлена на {h(date_str)}!"
     if sub_msg_id:
         try:
             await message.bot.edit_message_text(chat_id=message.chat.id, message_id=sub_msg_id, text=text, parse_mode="HTML", reply_markup=get_subscriptions_menu())
@@ -480,7 +507,7 @@ async def cb_rmsub_process(callback: CallbackQuery):
     sub_id = callback.data.replace("rmsub_", "")
     if sub_storage.remove_subscription(sub_id):
         await callback.answer("Подписка удалена!")
-        await cb_subs_menu(callback, None)
+        await cb_subs_menu(callback)
     else:
         await callback.answer("Ошибка при удалении.", show_alert=True)
 
@@ -495,8 +522,8 @@ async def cb_pay_sub(callback: CallbackQuery):
         await callback.message.edit_text("Подписка больше не существует.")
         return
         
-    await callback.message.edit_text("⏳ Запись в таблицу...")
-    success, _row = await gs_client.add_record(sub['type'], sub['amount'], sub['category'], f"Подписка: {sub['name']}")
+    await callback.message.edit_text("⏳ Сохранение...")
+    success, _row = await records_db.add_record(sub['type'], sub['amount'], sub['category'], f"Подписка: {sub['name']}")
     import datetime
     
     # Calculate next month date roughly
@@ -514,13 +541,12 @@ async def cb_pay_sub(callback: CallbackQuery):
         except ValueError:
             day -= 1 # adjust for end of month (e.g. 31 to 30)
 
-    new_date_str = new_date.strftime("%d.%m.%Y")
-    sub_storage.update_subscription_date(sub_id, new_date_str)
-    
     if success:
+        new_date_str = new_date.strftime("%d.%m.%Y")
+        sub_storage.update_subscription_date(sub_id, new_date_str)
         await callback.message.edit_text(f"✅ Успешно записано!\nСледующее списание перенесено на {new_date_str}.")
     else:
-        await callback.message.edit_text("❌ Ошибка при записи в таблицу.")
+        await callback.message.edit_text("❌ Ошибка при сохранении.")
 
 @router.callback_query(F.data.startswith("skip_sub_"))
 async def cb_skip_sub(callback: CallbackQuery):
