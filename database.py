@@ -4,7 +4,9 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from config import DATABASE_FILE
+import pytz
+
+from config import APP_TIMEZONE, DATABASE_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,7 @@ class RecordsDatabase:
         source: str | None = None,
         source_row: int | None = None,
     ):
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(pytz.timezone(APP_TIMEZONE))
         date_str = date_str or now.strftime("%d.%m.%Y")
         time_str = time_str or now.strftime("%H:%M")
         comment = comment or ""

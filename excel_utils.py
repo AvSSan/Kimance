@@ -5,6 +5,10 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
+import pytz
+
+from config import APP_TIMEZONE
+
 
 SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
@@ -235,5 +239,5 @@ def write_records_xlsx(records: list[dict], balance: float, output_path: str | P
 
 
 def export_filename(prefix: str = "Kimance_export") -> str:
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.datetime.now(pytz.timezone(APP_TIMEZONE)).strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{stamp}.xlsx"

@@ -5,7 +5,7 @@ import pytz
 
 from aiogram import Bot
 from subscriptions_storage import sub_storage
-from config import TELEGRAM_USER_ID
+from config import APP_TIMEZONE, TELEGRAM_USER_ID
 from keyboards import get_reminder_keyboard
 import html
 
@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 async def check_subscriptions(bot: Bot):
     logger.info("Running daily subscription check...")
-    tz = pytz.timezone("Europe/Moscow")
+    tz = pytz.timezone(APP_TIMEZONE)
     now = datetime.datetime.now(tz)
     
     subs = sub_storage.get_all()
@@ -39,11 +39,11 @@ async def check_subscriptions(bot: Bot):
             logger.error(f"Error processing subscription {s['name']}: {e}")
 
 def start_scheduler(bot: Bot):
-    tz = pytz.timezone("Europe/Moscow")
+    tz = pytz.timezone(APP_TIMEZONE)
     scheduler = AsyncIOScheduler(timezone=tz)
     
-    # Run daily at 12:00 MSK
+    # Run daily at 12:00 in the configured app timezone
     scheduler.add_job(check_subscriptions, 'cron', hour=12, minute=0, args=[bot])
     
     scheduler.start()
-    logger.info("Scheduler started successfully for daily subscription checks at 12:00 MSK")
+    logger.info(f"Scheduler started successfully for daily subscription checks at 12:00 {APP_TIMEZONE}")
