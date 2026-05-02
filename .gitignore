@@ -15,6 +15,7 @@ credentials.json
 # Local storage and DBs
 categories.json
 subscriptions.json
+templates.json
 finance.db
 *.db
 *.xlsx

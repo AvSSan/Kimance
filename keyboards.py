@@ -5,8 +5,8 @@ def get_main_menu() -> ReplyKeyboardMarkup:
     builder = ReplyKeyboardBuilder()
     builder.button(text="Доход")
     builder.button(text="Расход")
+    builder.button(text="Шаблоны")
     builder.button(text="Баланс 💰")
-    builder.button(text="Выгрузка Excel 📤")
     builder.button(text="Настройки")
     builder.adjust(2, 2, 1)
     return builder.as_markup(resize_keyboard=True)
@@ -29,9 +29,11 @@ def get_settings_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="Категории: Доход", callback_data="set_income")
     builder.button(text="Категории: Расход", callback_data="set_expense")
+    builder.button(text="Шаблоны", callback_data="tpl_settings")
     builder.button(text="Подписки 📅", callback_data="subs_menu")
+    builder.button(text="Выгрузка Excel 📤", callback_data="export_excel")
     builder.button(text="Назад 🔙", callback_data="main_menu")
-    builder.adjust(2, 1, 1)
+    builder.adjust(2, 2, 1, 1)
     return builder.as_markup()
 
 def get_settings_action_menu(cat_type: str) -> InlineKeyboardMarkup:
@@ -70,6 +72,31 @@ def get_subscriptions_menu() -> InlineKeyboardMarkup:
     builder.button(text="Удалить", callback_data="subs_del")
     builder.button(text="Назад 🔙", callback_data="settings_menu")
     builder.adjust(1, 2, 1)
+    return builder.as_markup()
+
+def get_templates_keyboard(templates: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for template in templates:
+        builder.button(text=template["name"], callback_data=f"use_tpl_{template['id']}")
+    builder.button(text="Настройки шаблонов", callback_data="tpl_settings")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def get_templates_settings_menu() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Список шаблонов", callback_data="tpl_list")
+    builder.button(text="Добавить", callback_data="tpl_add")
+    builder.button(text="Удалить", callback_data="tpl_del")
+    builder.button(text="Назад 🔙", callback_data="settings_menu")
+    builder.adjust(1, 2, 1)
+    return builder.as_markup()
+
+def get_delete_template_keyboard(templates: list) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for template in templates:
+        builder.button(text=f"🗑 {template['name']}", callback_data=f"rmtpl_{template['id']}")
+    builder.button(text="Назад 🔙", callback_data="tpl_settings")
+    builder.adjust(1)
     return builder.as_markup()
     
 def get_delete_subscription_keyboard(subs: list) -> InlineKeyboardMarkup:

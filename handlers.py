@@ -13,10 +13,12 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from keyboards import (
     get_main_menu, get_categories_keyboard, get_settings_menu,
     get_settings_action_menu, get_delete_category_keyboard, get_cancel_keyboard,
-    get_undo_keyboard, get_subscriptions_menu, get_delete_subscription_keyboard
+    get_undo_keyboard, get_subscriptions_menu, get_delete_subscription_keyboard,
+    get_templates_keyboard, get_templates_settings_menu, get_delete_template_keyboard
 )
 from storage import storage
 from subscriptions_storage import sub_storage
+from templates_storage import templates_storage
 from database import records_db
 from excel_utils import export_filename, write_records_xlsx
 from filters import PrivateUserFilter
@@ -38,6 +40,15 @@ class OperationState(StatesGroup):
 
 class SettingsState(StatesGroup):
     waiting_for_new_category = State()
+
+class TemplateUseState(StatesGroup):
+    waiting_for_amount = State()
+
+class TemplateState(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_comment = State()
+    waiting_for_type = State()
+    waiting_for_category = State()
 
 class SubState(StatesGroup):
     waiting_for_name = State()
@@ -89,12 +100,7 @@ async def cmd_show_balance(message: Message, state: FSMContext):
     else:
         await msg.edit_text("❌ Ошибка при получении баланса.")
 
-@router.message(F.text == "Выгрузка Excel 📤")
-async def cmd_export_excel(message: Message, state: FSMContext):
-    try: await message.delete()
-    except Exception: pass
-    await state.clear()
-
+async def send_excel_export(message: Message):
     msg = await message.answer("⏳ Готовлю Excel-файл...")
     records = await records_db.list_records()
     balance = await records_db.get_balance()
@@ -106,6 +112,288 @@ async def cmd_export_excel(message: Message, state: FSMContext):
     write_records_xlsx(records, balance, output_path)
     await msg.edit_text("✅ Выгрузка готова.")
     await message.answer_document(FSInputFile(output_path), caption="Excel-выгрузка финансов")
+
+@router.callback_query(F.data == "export_excel")
+async def cb_export_excel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer()
+    await send_excel_export(callback.message)
+
+@router.message(F.text == "Выгрузка Excel 📤")
+async def cmd_export_excel(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
+    await state.clear()
+    await send_excel_export(message)
+
+# --- Templates ---
+
+@router.message(F.text == "Шаблоны")
+async def cmd_templates(message: Message, state: FSMContext):
+    try: await message.delete()
+    except Exception: pass
+    await state.clear()
+
+    templates = templates_storage.get_all()
+    if not templates:
+        await message.answer("Шаблонов пока нет.", reply_markup=get_templates_keyboard(templates))
+        return
+
+    await message.answer("Выберите шаблон:", reply_markup=get_templates_keyboard(templates))
+
+@router.callback_query(F.data.startswith("use_tpl_"))
+async def cb_use_template(callback: CallbackQuery, state: FSMContext):
+    template_id = callback.data.replace("use_tpl_", "")
+    template = templates_storage.get(template_id)
+    if not template:
+        await callback.answer("Шаблон не найден.", show_alert=True)
+        return
+
+    await state.update_data(template_id=template_id, template_msg_id=callback.message.message_id)
+    await state.set_state(TemplateUseState.waiting_for_amount)
+    await callback.message.edit_text(
+        (
+            f"Шаблон: <b>{h(template['name'])}</b>\n"
+            f"Тип: <b>{h(template['type'])}</b>\n"
+            f"Категория: <b>{h(template['category'])}</b>\n"
+            f"Комментарий: <i>{h(template['comment'])}</i>\n\n"
+            f"Введите сумму:"
+        ),
+        parse_mode="HTML",
+        reply_markup=get_cancel_keyboard()
+    )
+    await callback.answer()
+
+@router.message(TemplateUseState.waiting_for_amount)
+async def process_template_amount(message: Message, state: FSMContext):
+    match = re.match(r'^([\d.,]+)\s*(.*)$', message.text or "")
+    data = await state.get_data()
+    template_id = data.get("template_id")
+    template = templates_storage.get(template_id)
+    template_msg_id = data.get("template_msg_id")
+
+    if not template:
+        await state.clear()
+        await message.answer("Шаблон не найден.", reply_markup=get_main_menu())
+        return
+
+    try: await message.delete()
+    except Exception: pass
+
+    if not match:
+        text = f"Шаблон: <b>{h(template['name'])}</b>\n❌ Не удалось распознать сумму. Введите число:"
+        if template_msg_id:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=template_msg_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=get_cancel_keyboard()
+            )
+        return
+
+    amount_text = match.group(1).replace(",", ".")
+    extra_comment = match.group(2).strip()
+    try:
+        amount = float(amount_text)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        text = f"Шаблон: <b>{h(template['name'])}</b>\n❌ Сумма должна быть положительным числом. Введите сумму:"
+        if template_msg_id:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=template_msg_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=get_cancel_keyboard()
+            )
+        return
+
+    comment = template["comment"]
+    if extra_comment:
+        comment = f"{comment} | {extra_comment}" if comment else extra_comment
+
+    if template_msg_id:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=template_msg_id,
+            text="⏳ Сохранение..."
+        )
+
+    success, record = await records_db.add_record(
+        template["type"],
+        amount,
+        template["category"],
+        comment
+    )
+
+    if success:
+        undo_cache[message.from_user.id] = record["id"]
+        text = f"✅ Сохранено: {h(template['type'])} {amount} -> {h(template['category'])}"
+        if template_msg_id:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=template_msg_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=get_undo_keyboard()
+            )
+        else:
+            await message.answer(text, parse_mode="HTML", reply_markup=get_undo_keyboard())
+    else:
+        if template_msg_id:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=template_msg_id,
+                text="❌ Ошибка сохранения. Попробуйте еще раз."
+            )
+        else:
+            await message.answer("❌ Ошибка сохранения. Попробуйте еще раз.")
+
+    await state.clear()
+
+@router.callback_query(F.data == "tpl_settings")
+async def cb_templates_settings(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("Шаблоны:", reply_markup=get_templates_settings_menu())
+    await callback.answer()
+
+@router.callback_query(F.data == "tpl_list")
+async def cb_templates_list(callback: CallbackQuery):
+    templates = templates_storage.get_all()
+    if not templates:
+        await callback.message.edit_text("Шаблонов пока нет.", reply_markup=get_templates_settings_menu())
+        await callback.answer()
+        return
+
+    lines = ["<b>Ваши шаблоны:</b>\n"]
+    for template in templates:
+        comment = f" | {h(template['comment'])}" if template.get("comment") else ""
+        lines.append(
+            f"• <b>{h(template['name'])}</b> — {h(template['type'])}, {h(template['category'])}{comment}"
+        )
+
+    await callback.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=get_templates_settings_menu())
+    await callback.answer()
+
+@router.callback_query(F.data == "tpl_add")
+async def cb_template_add(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(TemplateState.waiting_for_name)
+    await state.update_data(template_msg_id=callback.message.message_id)
+    await callback.message.edit_text("Введите название шаблона:", reply_markup=get_cancel_keyboard())
+    await callback.answer()
+
+@router.message(TemplateState.waiting_for_name)
+async def process_template_name(message: Message, state: FSMContext):
+    name = (message.text or "").strip()
+    try: await message.delete()
+    except Exception: pass
+
+    if not name:
+        await message.answer("Название не может быть пустым.", reply_markup=get_cancel_keyboard())
+        return
+
+    await state.update_data(template_name=name)
+    await state.set_state(TemplateState.waiting_for_comment)
+    data = await state.get_data()
+    template_msg_id = data.get("template_msg_id")
+    text = f"Название: <b>{h(name)}</b>\nВведите комментарий для операции или «-», чтобы оставить пустым:"
+    if template_msg_id:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=template_msg_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=get_cancel_keyboard()
+        )
+    else:
+        msg = await message.answer(text, parse_mode="HTML", reply_markup=get_cancel_keyboard())
+        await state.update_data(template_msg_id=msg.message_id)
+
+@router.message(TemplateState.waiting_for_comment)
+async def process_template_comment(message: Message, state: FSMContext):
+    comment = (message.text or "").strip()
+    if comment == "-":
+        comment = ""
+    try: await message.delete()
+    except Exception: pass
+
+    await state.update_data(template_comment=comment)
+    await state.set_state(TemplateState.waiting_for_type)
+    data = await state.get_data()
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Доход", callback_data="tpltype_Доход")
+    builder.button(text="Расход", callback_data="tpltype_Расход")
+    builder.adjust(2)
+
+    await message.bot.edit_message_text(
+        chat_id=message.chat.id,
+        message_id=data["template_msg_id"],
+        text=f"Название: <b>{h(data['template_name'])}</b>\nКомментарий: <i>{h(comment)}</i>\nЭто доход или расход?",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+@router.callback_query(TemplateState.waiting_for_type, F.data.startswith("tpltype_"))
+async def process_template_type(callback: CallbackQuery, state: FSMContext):
+    type_ = callback.data.replace("tpltype_", "")
+    await state.update_data(template_type=type_)
+    data = await state.get_data()
+    cats_type = "income" if type_ == "Доход" else "expense"
+    categories = storage.get_categories(cats_type)
+
+    await state.set_state(TemplateState.waiting_for_category)
+    await callback.message.edit_text(
+        (
+            f"Название: <b>{h(data['template_name'])}</b>\n"
+            f"Комментарий: <i>{h(data['template_comment'])}</i>\n"
+            f"Тип: <b>{h(type_)}</b>\n"
+            f"Выберите категорию:"
+        ),
+        parse_mode="HTML",
+        reply_markup=get_categories_keyboard(categories, prefix="tplcat_")
+    )
+    await callback.answer()
+
+@router.callback_query(TemplateState.waiting_for_category, F.data.startswith("tplcat_"))
+async def process_template_category(callback: CallbackQuery, state: FSMContext):
+    category = callback.data.replace("tplcat_", "")
+    data = await state.get_data()
+    templates_storage.add_template(
+        name=data["template_name"],
+        comment=data["template_comment"],
+        type_=data["template_type"],
+        category=category,
+    )
+
+    await callback.message.edit_text(
+        f"✅ Шаблон «{h(data['template_name'])}» добавлен.",
+        parse_mode="HTML",
+        reply_markup=get_templates_settings_menu()
+    )
+    await state.clear()
+    await callback.answer()
+
+@router.callback_query(F.data == "tpl_del")
+async def cb_template_delete(callback: CallbackQuery):
+    templates = templates_storage.get_all()
+    if not templates:
+        await callback.message.edit_text("Нет шаблонов для удаления.", reply_markup=get_templates_settings_menu())
+        await callback.answer()
+        return
+    await callback.message.edit_text("Выберите шаблон для удаления:", reply_markup=get_delete_template_keyboard(templates))
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("rmtpl_"))
+async def cb_remove_template(callback: CallbackQuery):
+    template_id = callback.data.replace("rmtpl_", "")
+    if templates_storage.remove_template(template_id):
+        await callback.answer("Шаблон удален.")
+        await callback.message.edit_text("Шаблоны:", reply_markup=get_templates_settings_menu())
+    else:
+        await callback.answer("Ошибка при удалении.", show_alert=True)
 
 
 from keyboards import get_cancel_reply_keyboard
